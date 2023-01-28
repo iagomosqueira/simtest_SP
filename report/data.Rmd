@@ -1,0 +1,548 @@
+---
+title: "ALB-IO test SAMtools SP_SS"
+
+author: 
+ - Henning Winker (GFCM) 
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  pdf_document:
+    number_sections: yes
+    toc: yes
+    #keep_tex: false
+vignette: >
+  %\VignetteIndexEntry{ss3daigs Vignetted}
+  %\VignetteEngine{knitr::rmarkdown}
+  \usepackage[utf8]{inputenc}
+---
+
+```{r wrap-hook, echo = FALSE}
+library(knitr)
+hook_output = knit_hooks$get('output')
+knit_hooks$set(output = function(x, options) {
+  # this hook is used only when the linewidth option is not NULL
+  if (!is.null(n <- options$linewidth)) {
+    x = knitr:::split_lines(x)
+    # any lines wider than n should be wrapped
+    if (any(nchar(x) > n)) x = strwrap(x, width = n)
+    x = paste(x, collapse = '\n')
+  }
+  hook_output(x, options)
+})
+```
+
+
+```{r, echo = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "  " ,fig.align = 'center', cache=FALSE,tidy.opts=list(width.cutoff=80), tidy=TRUE)
+
+```
+
+
+
+
+# Load packages
+
+
+```{r, message=FALSE}
+# Load
+library(ggplot2)
+library(openMSE)
+library(FishLife)
+library(SPMpriors)
+library(FLCore)
+library(ggplotFL)
+library(FLRef)
+library(FLife)
+library(JABBA)
+library(ggpubr)
+```
+
+# Life history parameters
+
+Life history parameters of ALB-IO for females were assumed assumed as follows. 
+
+```{r}
+alb = flmvn_traits(Genus="Thunnus",Species="alalunga",h=c(0.6,0.9),Plot=F)$traits
+```
+
+
+
+
+```{r}
+linf = alb[alb$trait=="Loo","mu.stk"] 
+k =  alb[alb$trait=="K","mu.stk"] 
+t0 = -0.5 
+tm = alb[alb$trait=="tm","mu.stk"] 
+a = 0.00001
+b = 3.04
+tmax =  ceiling(alb[alb$trait=="tmax","mu.stk"])
+s = alb[alb$trait=="h","mu.stk"]
+
+
+# check vbgf
+la = data.frame(age=0:tmax,length=vonbert(linf,k,t0,age=0:tmax))
+la
+
+```
+
+An instantaneous rate of natural mortality was estimated using Then based on the maximum age estimates `tmax1 = 22` and `tmax2 = 12`
+
+```{r}
+M = 4.899*tmax^-.916 
+```
+
+
+# Leslie matrix with stock-specitic direct input
+
+The recent version of the `JABBA` package provides a Leslie matrix function for use stock specific estimates to get an expected value for $r$.
+
+The first step is build a `jbio` object and then pass this object to compute $r$ (and Generation time) with `jbleslie()`
+
+```{r}
+
+bio = jbio(amax=tmax,nsexes=1,Loo=linf,k=k,t0=t0,aW=1000*a,bW=b,
+     mat=c(tm,tm*1.2,1),M=M,h=s)
+r = jbleslie(bio)$r
+r
+
+```
+
+# Setting up a generic OM for ALB
+
+The `FLife` function `lhPar()` is populated with some of basic life history estimates for growth,length-weight, maturity based on regional information and steepness from FishLife/SPMpriors.
+
+```{r}
+
+par=lhPar(FLPar(linf=linf,k=k,t0=t0,
+            a=a,b=b,a50 =2,
+            s=s,m1=M))
+```
+
+The `FLife` function `lhEql` is then used as a constructer for a basic `FLBRP()` object.
+
+```{r}
+
+eql=lhEql(par,range = c(min = 0, max = tmax, minfbar = 1, maxfbar = tmax-1, plusgroup=tmax))
+```
+
+Now further manipulations can be made, such as adjusting the inbuilt Gislason $M$ to a scaled Lorenzen $M$ and specifying a new maturity ogive. 
+
+
+```{r}
+# M
+m(eql)[] = Mlorenzen(stock.wt(eql),Mref=M,Aref=2)
+
+mat50 = tm
+mat95 = tm*1.5
+mat(eql) = newselex(mat(eql),FLPar(S50=mat50,mat95=mat95,Smax=1000,Dcv=0.5,Dmin=0.1))
+```
+
+It is important to then update the stock recruitment the stock recruitment relationship for a given steepness $s$ value if key biological parameters are modified.
+
+```{r}
+# check srr parameters
+params(eql)
+# update SRR given s after modifying m
+eql = updsr(eql,s=s) 
+params(eql)
+
+```
+
+After making all the desired modifications the time horizon can be adjusted with `fbar` range. Here a time horizon from 1981-2020 is chosen.
+
+```{r}
+# change time horizon with a fixed intial f0
+f0 = 0.01
+fbar(eql) = FLQuant(f0,dimnames=list(year=1951:2020))
+
+```
+
+Now `FLBRP` can be directly converted into an `FLStock` and the stock recruitment relationship can be extracted.
+
+
+```{r}
+stk = as(eql,"FLStock")
+units(stk) = standardUnits(stk) # assign units
+sr = as(as(eql,"predictModel"),"FLSR")
+```
+
+Once the stock is constructed further manipulations are straight forward, such as specifying fishing selectivity using the 5-parameter selectivity function `newselex`
+
+A new selectivity can be set by adjusting the `harvest` slot. If some dome-shaping is desired, $Smax$ has to be smaller then the plus group, $Dcv$ governs the slope of the half-normal and $Dmin$ governs the hight at the right end tail.
+
+```{r}
+
+# catch before maturity
+S50 = 3 
+S95 = 4.2
+# some Doming
+Smax = 7
+Dcv = 0.5
+Dmin = 0.2
+
+harvest(stk) =  f0*newselex(
+  harvest(stk),FLPar(S50=S50,S95=S95,
+    Smax=Smax,Dcv=Dcv,Dmin=Dmin))
+
+```
+
+The so generated age-structured relationships for weight-at-age, maturity-at-age, natural mortality and selective are shown in Fig. 1.
+
+```{r fig1, fig.height=4,fig.width=5, fig.cap = paste0("Specified biological and selectivtiy function for natural mortality, selectivity, maturity and somatic growth in weight-at-age")}
+
+ggplot(FLQuants(stk,"m","catch.sel","mat","catch.wt"))+
+  geom_line(aes(age,data))+
+  facet_wrap(~qname,scale="free")+theme_bw()
+
+```
+
+## Estimating priors from FLStock and SRR
+
+First, it is straight forward to compute the intrinsic rate of population increase from a Leslie for a specified steepness value. However, this $r$ estimate ignores selectivity and should only be used in the context of a Schaefer model with $F_{MSY} = r/2$.  
+
+```{r}
+r.leslie = mean(productivity(stk,s=s)$r)
+r.leslie
+# compare
+r
+# Fmsy
+r.leslie/2 
+```
+
+An alternative is to estimate $r$ and the shape parameter $n$ as function $MSY$, $VB_{MSY}$ and $VB_0$ from an age-structured equilibrium model (ASEM), where $BB$ denotes that the vulnarable (or exploitable) biomass as function of selectivity. The basic relationships for $r$ and $n$ can then be approximated as follows:
+
+$$F_{MSY} = \frac{MSY}{VB_{MSY}}$$
+$$\frac{VB_{MSY}}{EB_0} = n^{(-\frac{1}{n-1})}$$
+
+$$r =F_{MSY}\frac{n-1}{1-n^{-1}}$$
+
+To compute the expected values for $r$ and $n$ (here denoted as $m$), requires the stock biology and selectivity together with the SRR as input.
+
+```{r}
+brp = FLBRP(stk,sr)
+r.pella = asem2spm(brp)
+
+r.pella
+
+```
+
+This is very close to a Fox model with m = 1
+
+
+```{r fig2, fig.height=5,fig.width=10, fig.cap = paste0("Specified biological and selectivtiy function for natural mortality, selectivity, maturity and somatic growth in weight-at-age")}
+
+ggpubr::ggarrange(
+plotpf(brp,rel=F),
+plotpf(brp,rel=T),common.legend = T
+)
+
+
+```
+
+
+## Simulating stock dynamics with evolutionary F-trajectories
+
+The operating model is assumed to represent the "true" age-structured stock dynamics for evaluating the estimation accuracy of Spict. The "true" MSY based reference points can be easily added to the `FLStock` by extending it to `FLStockR`.
+
+```{r}
+# Estimate refpts
+brp = computeFbrp(stk,sr,proxy="msy",blim=0.3,type="btgt")
+stk = FLStockR(stk)
+stk@refpts = Fbrp(brp)
+# check
+stk@refpts
+```
+```{r fig3, fig.height=7,fig.width=9, fig.cap = paste0("Equilibrium curves Recruitment, SSB, F and Landings and estimated MSY-based reference points for the ALB OM")}
+
+ploteq(brp)
+
+```
+
+`FLRef` provides `rffwd` as an extension of the `FLCore` F-projection function`ffwd`, which enables to setup a control object for generating randomized evolutionary F-trajectories (Thorson et al. 2016). The parameters required are: (1) $Feq$ which sets the terminal depletion level baseline relative to $SB_0$, `Frate` which is determines the turn-over time of the `F-evalution`, `Fsigma` determines the annual variation in F and `SB0` is reference biomass level that is typically specified as $SSB_0$.
+
+Here a one-way downhill is approximated
+
+```{r}
+its = 100 # iterations
+b0 = an(refpts(eql)["virgin","ssb"]) # SSB0 for brp
+
+control = FLPar(Feq=0.15,Frate=0.05,Fsigma=0.15,SB0=b0,
+                minyear=dims(stk)$minyear+1,
+                maxyear=dims(stk)$maxyear,its=its)
+```
+
+The stock dynamics are forecasted with random recruitment under and evolving F-trajectory.
+
+```{r}
+set.seed(1234)
+# Random recruitment deviations with sigR = 0.5 and AR1 rho = 0.3
+rec_devs = ar1rlnorm(0.3, 1951:2020, its, 0, 0.5)
+# propagate desired iterations
+stki <- propagate(stk, its)
+# create OM 
+om <- rffwd(stki,sr,
+             control=control,
+             deviances=rec_devs)
+om@refpts = stk@refpts
+```
+
+
+
+
+```{r fig5, fig.height=7,fig.width=9,warning=FALSE,message=FALSE, fig.cap = paste0("Simulated population dynamics compared to reference points from the off-the-shelf OM for ALB based on 100 iterations")}
+
+plotAdvice(om)
+
+```
+
+The last step is to generate the observed survey index using the `FLRef` function `bioidx.sim()`. By default, the index assumes the same fishing selectivity in the stock object (but see `?bioidx.sim`. In this case, a moderate observation error of `sigma=0.25` is assumed and the catchability coefficient $q$ that scales the exploitable biomass to the index is set as `q = 0.001`. The index is assumed to start in 1999.  
+
+The index is from LL CPUE an immolates the adult biomass without  doming
+
+```{r}
+cpue.sel = newselex(harvest(stk),FLPar(S50=3.5,mat95=4.2,
+Smax=100,Dcv=Dcv,Dmin=0.05))
+idx = window(bioidx.sim(om,sel=cpue.sel,sigma=0.25,q=0.001),start=1970)
+```
+
+```{r fig6, fig.height=7,fig.width=9,warning=FALSE,message=FALSE, fig.cap = paste0("Individual iterations of simulated trajectories of $B/B_{MSY}$, $F/F_{MSY}$, $Catch/MSY$ and the normalized CPUE indices from the off-the-shelf OM  shown for the first 20 iterations")}
+
+flqs= FLQuants("B/Bmsy"=ssb(om)/om@refpts["Btgt"],
+               "F/Fmsy"=fbar(om)/om@refpts["Fmsy"],
+               "Catch/MSY"=catch(om)/om@refpts["Yeq"]
+               ,Index=idx@index%/%yearMeans(idx@index))
+
+ggplot(iter(flqs,1:20))+
+  geom_line(aes(year,data,col=ac(iter)),alpha=0.5)+
+  theme_bw()+facet_wrap(~qname)+
+  theme(legend.position = "none")+geom_hline(yintercept = 1,linetype=2)+
+  scale_color_manual(values=c(rainbow(20)))
+
+```
+
+# Simulation testing with Spict (need to convert to SP_SS)
+
+# SP_SS estimation scenarios
+
+
+```{r}
+#' jb2FLStockR()
+#' @param jabba fit from JABBA fit_jabba() or jabba$kbtrj 
+#' @param bfrac biomass limit reference point 
+#' @param rel if TRUE ratios BBmsy and FFmsy are stored
+#' @return FLStockR with refpts
+#' @export
+spss2FLStockR <- function(spss,bfrac=0.3,rel=FALSE){
+  df = spss@TMB_report
+  
+  year = an(names(df$dynamic_SSB0))
+  n = length(year)-1
+  bdev = c(1,exp(df$log_B_dev))[1:n]
+  year = year[1:n]
+  N = as.FLQuant(data.frame(age=1,year=year,unit="unique",
+            season="all",area="unique",iter=1,data=bdev))
+  C = as.FLQuant(data.frame(age=1,year=year,unit="unique",
+                            season="all",area="unique",iter=1,data=df$Cpred))
+  
+  if(!rel){
+    Mat = as.FLQuant(data.frame(age=1,year=year,unit="unique",
+        season="all",area="unique",iter=1,data=df$B[1:n]/bdev))
+    
+    H = as.FLQuant(data.frame(age=1,year=year,unit="unique",
+                              season="all",area="unique",iter=1,data=df$F))
+    B= as.FLQuant(data.frame(age=1,year=year,unit="unique",
+               season="all",area="unique",iter=1,data=df$B[1:n]))
+  } else {
+    Mat = as.FLQuant(data.frame(age=1,year=year,unit="unique",
+    season="all",area="unique",iter=1,data=(df$B[1:n]/df$BMSY)/bdev))
+    
+    H = as.FLQuant(data.frame(age=1,year=year,unit="unique",
+              season="all",area="unique",iter=1,data=df$F/df$FMSY))
+    B= as.FLQuant(data.frame(age=1,year=year,unit="unique",
+      season="all",area="unique",iter=1,data=df$B[1:n]/df$BMSY))
+    }
+  
+  
+  stk = FLStockR(
+    stock.n=N,
+    catch.n = C,
+    landings.n = C,
+    discards.n = FLQuant(0, dimnames=list(age="1", year = (year))),
+    stock.wt=FLQuant(1, dimnames=list(age="1", year = (year))),
+    landings.wt=FLQuant(1, dimnames=list(age="1", year = year)),
+    discards.wt=FLQuant(1, dimnames=list(age="1", year = year)),
+    catch.wt=FLQuant(1, dimnames=list(age="1", year = year)),
+    mat=Mat,
+    m=FLQuant(0.0001, dimnames=list(age="1", year = year)),
+    harvest = H,
+    m.spwn = FLQuant(0, dimnames=list(age="1", year = year)),
+    harvest.spwn = FLQuant(0.0, dimnames=list(age="1", year = year))
+  )
+  units(stk) = standardUnits(stk)
+  stk@catch = computeCatch(stk)
+  stk@landings = computeLandings(stk)
+  stk@discards = computeStock(stk)
+  stk@stock = as.FLQuant(data.frame(age=1,year=year,unit="unique",
+                    season="all",area="unique",iter=1,data=df$B[1:n]))
+  
+    stk@refpts = FLPar(
+      Fmsy = df$FMSY,
+      Bmsy = df$BMSY,
+      MSY = df$MSY,
+      Blim= df$BMSY*bfrac,
+      B0 = df$K)
+  
+  if(rel){
+    stk@refpts[1:2] = 1
+    stk@refpts["Blim"] = bfrac
+    stk@refpts["B0"] = df$K/df$BMSY
+  }
+  
+  return(stk)
+}
+```
+
+The two scenarios explored were:
+
+(1) `Schaefer` with r prior from Leslie matrix
+(2) `Pella` with priors from ASPM (close to Fox)
+
+
+Below a simple wrapper function is presented that: 
+
++ Fits the 2 Spict scenarios
++ Applies `spict2FLStockR` to convert Spict fits into simplified `FLStock` objects
++ Apply `stock2ratios` to convert OM into a simplified `FLStock` object
++ Combines all into a `FLStocks` object output
+
+
+```{r}
+
+runi <- function(om,idx,it){
+
+# index
+dfi =as.data.frame(iter(idx@index,it))
+# catch 
+dfc = as.data.frame(iter(om@catch,it))
+# year
+year = dfc$year
+n = length(year)
+inp = new("Data",y=year)
+inp@Year = year
+inp@Cat= inp@Ind =inp@CV_Ind= matrix(NA,1,n) 
+inp@Cat[1,] = dfc$data 
+inp@Ind[1,which(year%in%dfi$year)] = dfi$data 
+inp@CV_Ind[] = 0.25
+
+# Parameter init control
+# MSY = 60
+# Fmsy = 0.2
+# R prior does not seem to work with sd =  CV*mu? or variance???
+# Must be super precise for an imprecise estimate
+fits=list(
+Schaefer = SP_SS(Data = inp,fix_sigma = T ,use_r_prior = T,early_dev = c("all"),
+                  start = list(MSY=50,dep = 0.95 , sigma = 0.2, 
+                               tau = 0.05,n=2,r_prior=c(r.leslie,0.01))),
+Pella = SP_SS(Data = inp,fix_sigma = T ,use_r_prior = T,early_dev = c("all"), 
+            start = list(MSY=50,dep = 0.95, sigma = 0.2, tau = 0.05,
+                         n=r.pella[[2]],r_prior=c(r.pella[[1]],0.01)))
+)
+
+res = FLStocks(lapply(fits,function(x){
+ spss2FLStockR(x,rel=T) 
+})) 
+# cut forecast
+flom = stock2ratios(iter(om,it))
+res = FLStocks(c(om=flom,res))   
+return(res)
+}
+```
+
+
+```{r fig7, fig.height=10,fig.width=9,warning=FALSE,message=FALSE, fig.cap = paste0("OM and estimated trajectories of $B/B_{MSY}$ and $F/F_{MSY}$ for the first iteration")}
+
+res = runi(om,idx,it=2)
+
+plot(res,metrics=list("B/Bmsy"=ssb,"F/Fmsy"=fbar,Catch=landings))+
+  geom_hline(yintercept = 1,linetype=2)+theme_bw()
+
+
+```
+
+\pagebreak
+
+## Quick simulation performance comparison
+
+
+```{r,echo=FALSE}
+load(file="sim.alb.spss.rdata")
+
+```
+
+
+```{r,eval=FALSE}
+sims = runi(om,idx,it=1)
+sims =FLStocks(lapply(sims,function(x)propagate(x,its)))
+
+for(i in 2:its){
+  out=runi(om,idx,it=i)
+  for(j in 1:length(out)) iter(sims[[j]],i) = out[[j]]} 
+
+sims= FLStocks(Map(function(x,y){
+  x@name=y
+  x},x=sims,y=as.list(names(sims))))
+```
+```{r fig8, fig.height=7,fig.width=9,warning=FALSE,message=FALSE, fig.cap = paste0("OM and estimated trajectories of $B/B_{MSY}$ and $F/F_{MSY}$ for 100 iterations")}
+
+plot(sims,metrics=list("B/Bmsy"=ssb,"F/Fmsy"=fbar))+
+  geom_hline(yintercept = 1,linetype=2)+theme_bw()
+
+```
+
+Several runs failed to converge the hessian, but these failed runs were not quantified removed for this initial evaluation.
+
+By making use of `FLQuants` in is reasonably straight forward compute some estimation error with respect to the "true" value of $B_{MSY}$ and $F_{MSY}$ for the terminal year 2020.  
+
+
+
+```{r}
+simt= window(sims,start=2015)
+bias.b = FLQuants(lapply(simt[2:3],function(x){
+  log(ssb(x))-log(window(ssb(simt$om)))
+}))
+bias.f = FLQuants(lapply(simt[2:3],function(x){
+  log(fbar(x))-log(window(fbar(simt$om)))
+}))
+
+out = rbind(
+  data.frame(as.data.frame(bias.b),what="BBmsy"),
+  data.frame(as.data.frame(bias.f),what="FFmsy")
+)
+```
+
+
+
+```{r fig9, fig.height=4,fig.width=9,warning=FALSE,message=FALSE, fig.cap = paste0("Boxplot showing estimation errors of $log(B/B_{MSY})$ and $log(F/F_{MSY})$ for 2020 with respect to the true quantities of the OM")}
+
+ggplot(out,aes(x=qname,data,fill=qname))+
+  geom_boxplot(outlier.shape = NA)+
+  facet_wrap(~what)+
+  geom_hline(yintercept = 0,col=2)+theme_bw()+
+  xlab("Scenario")+ylab("Error")+ylim(-2,2)
+
+```
+
+\pagebreak
+
+```{r fig10a, fig.height=5,fig.width=8, fig.cap = paste0("Median Trajectories of $VB/VB_{MSY}$ and $SB/SB_{MSY} for 100 OM iteratsions")}
+
+asem.vb = asem2spm(brp,quant="vb")
+
+df1 = data.frame(as.data.frame(iterMedians(vb(om))/asem.vb["Bmsy"]),qname="vb")
+df2 = data.frame(as.data.frame(iterMedians(ssb(om))/stk@refpts[2]),qname="ssb")
+df = rbind(df1,df2)
+
+ggplot(df,aes(year,data,color=qname))+geom_line()+
+  theme_bw()+ylab(expression(B/B[MSY]))+geom_hline(yintercept = 1,linetype=2)+
+  theme(legend.title = element_blank())
+
+```
