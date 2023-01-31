@@ -158,7 +158,6 @@ stki <- propagate(stk, its)
 om <- rffwd(stki, srr, control=control, deviances=rec_devs)
 refpts(om) <- refpts(stk)
 
-
 plotAdvice(om)
 
 # Generate LL CPUE, flat-toped selectivity
