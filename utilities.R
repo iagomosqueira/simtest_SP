@@ -9,9 +9,9 @@
 
 # ---- dlmsp
 
-# buildTMBdata {{{
+# buildTMBdataDLMSP {{{
 
-buildTMBdata <- function(catch, indices, rescale=1, fix_sigma=1,
+buildTMBdataDLMSP <- function(catch, indices, rescale=1, fix_sigma=1,
   state_space=TRUE, early_dev=c("all", "index"),
   prior_dist=list(r=c(NA, NA), MSY=c(NA, NA)), n_seas=4L) {
 
@@ -112,8 +112,9 @@ dlmsp.sa <- function(stk, idx, args, tracking,
     cab <- iter(catch, i)
     ind <- iter(indices, i)
 
-    data <- buildTMBdata(cab, ind, rescale=rescale, state_space=state_space,
-      early_dev=early_dev, prior_dist=prior_dist, n_seas=n_seas)
+    data <- buildTMBdataDLMSP(cab, ind, rescale=rescale,
+      state_space=state_space, early_dev=early_dev,
+      prior_dist=prior_dist, n_seas=n_seas)
 
     # SETUP params
     params <- list(
@@ -176,6 +177,96 @@ dlmsp.sa <- function(stk, idx, args, tracking,
 
 # --- spict
 
+# buildTMBinputSPICT {{{
+
+# obsC, timeC, obsI, timeI
+
+buildTMBinputSPICT <- function(catch, indices) {
+
+  # PARSE and CHECK arguments
+  ny <- dim(catch)[2]
+
+  # C_hist
+
+  dataC <- as.data.frame(catch)
+  obsC <- dataC$data
+  timeC <- dataC$year
+
+  # obsI
+
+  dataI <- lapply(indices, function(x) as.data.frame(x))
+  obsI <- lapply(dataI, '[[', 'data')
+  timeI <- lapply(dataI, '[[', 'year')
+
+  # BUILD input list
+  inp <- list(obsC=obsC, timeC=timeC, obsI=obsI, timeI=timeI)
+
+  return(inp)
+}
+# }}}
+
+# spict.sa {{{
+
+spict.sa <- function(stk, idx, args, tracking) {
+ 
+  # EXTRACT inputs
+  catch <- catch(stk)
+  indices <- lapply(idx, index)
+
+  # TODO: DIMS
+  ny <- dim(catch)[2]
+  nsurvey <- length(indices)
+
+  # TODO: CHECK inputs
+
+  # OUTPUT
+  empty <- catch %=% 0
+  out <- vector(mode="list", length=args$it)
+
+  # LOOP over iters
+  for (i in seq(args$it)) {
+
+    # EXTRACT single iter
+    cab <- iter(catch, i)
+    ind <- iter(indices, i)
+
+    inp <- buildTMBinputSPICT(cab, ind)
+
+    # SET simple options
+    inp <- spict.simple(inp)
+
+    # FIT spict
+    fit <- fit.spict(inp)
+
+    # convergence flag
+    conv <- fit$opt$convergence
+
+    # GET refpts
+    rps <- unlist(c(fit$report[c("MSY", "Fmsy", "Bmsy")],
+      K=fit$value[['K']]))
+
+    # EXTRACT output indicators
+    ind <- spict2ind(fit)
+
+    out[[i]] <- list(ind=ind, conv=conv, rps=rps)
+    
+  }
+
+  # COMBINE results
+
+  inds <- lapply(out, "[[", "ind")
+  ind <- FLQuants(lapply(setNames(nm=names(inds[[1]])), function(i)
+    Reduce(combine, lapply(inds, "[[", i))))
+
+  rps <- Reduce(combine, lapply(out, function(x) FLPar(x$rps)))
+
+  # WRITE tracking
+  tracking['conv.est', ac(args$ay)] <- unlist(lapply(out, '[[', 'conv'))
+
+  return(list(ind=ind, tracking=tracking, refpts=rps))
+}
+# }}}
+
 # spict.simple {{{
 
 #' Function to simplify spict for a fast and robust as an MP
@@ -232,3 +323,62 @@ spict.simple = function(inp, r.pr=c(0.3, 0.3, 1), bk.pr=c(0.9, 0.3, 1),
 
   return(inp)
 }
+
+# }}}
+
+# spict2FLQuant {{{
+
+spict2FLQuant <- function(x,
+  val=c("logB", "logFnotS", "logCpred", "logBBmsy", "logFFmsynotS")) {
+
+  val <- match.arg(val)
+
+  # logB
+  if(val == "logB") {
+    vec = x$par.random
+  } else {
+    vec = x$value
+  }
+
+  quant <- an(exp(vec[which(names(vec)==val)]))
+
+  if(val == "logCpred") {
+    season = x$inp$dtc[1]
+  } else {
+    season = round(1/x$inp$dteuler)
+  }
+
+  year <- c(rep(seq(x$inp$timerange[1], x$inp$timerange[2]), each=season))
+  quant <- quant[1:length(year)]
+
+  dat <- data.frame(age=1,
+    year=c(rep(seq(x$inp$timerange[1], x$inp$timerange[2]),each=season)),
+    season=c(rep(seq(season), x$inp$timerange[2] - x$inp$timerange[1]+1)),
+    data=quant)
+
+  if(val == "logCpred") {
+    out <- seasonSums(as.FLQuant(dat))
+  } else {
+      out <- as.FLQuant(dat)[,,,season] 
+      dimnames(out)$season <- "all"
+  }
+  return(out)
+}
+# }}}
+
+# spict2ind {{{
+
+spict2ind <- function(fit) {
+
+  out <- list(
+    B = spict2FLQuant(fit, val="logB"),
+    F = spict2FLQuant(fit, val="logFnotS"),
+    Bstatus = spict2FLQuant(fit, val="logBBmsy"),
+    Fstatus = spict2FLQuant(fit, val="logFFmsynotS"),
+    C = spict2FLQuant(fit, val="logCpred"))
+
+  return(FLQuants(out))
+}
+# }}}
+
+#    stk@refpts["B0"] = res$value["K"]/res$report$Bmsy

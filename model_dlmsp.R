@@ -1,5 +1,5 @@
 # model_dlmsp.R - DESC
-# /home/mosquia/Active/Doing/SP_IOTC/test_SP/model_dlmsp.R
+# test_SP/model_dlmsp.R
 
 # Copyright (c) WUR, FAO 2023.
 # Author: Henning WINKER (FAO) <iago.mosqueira@wur.nl>
@@ -23,15 +23,23 @@ load("data/om.RData")
 
 # SET dlmp.sa inputs
 
-args <- list(it=dim(om)[6])
+args <- list(it=dim(om)[6], ay=2020)
 
 tracking <- FLQuant(dimnames=list(metric="conv.est", year=1951:2020,
   iter=seq(args$it)))
 
 # CALL dlmp.sa w/priors
 
+s01 <- dlmsp.sa(om, idx=FLIndices(A=idx), args, tracking)
+
 s01 <- dlmsp.sa(om, idx=FLIndices(A=idx), args, tracking,
   prior_dist=list(r=c(0.4, 0.2), MSY=c(log(50), 0.4)))
+
+s01 <- dlmsp.sa(om, idx=FLIndices(A=idx), args, tracking,
+  prior_dist=list(MSY=c(log(50), 0.4)))
+
+s01 <- dlmsp.sa(om, idx=FLIndices(A=idx), args, tracking,
+  prior_dist=list(r=c(0.4, 0.01)))
 
 # PLOTS
 
@@ -52,28 +60,29 @@ plot(s01$ind$B, vb(window(om, start=1970), sel.pattern(idx)))
 
 load("bootstrap/data/swo.RData")
 
-args <- list(it=dim(swo)[6])
+args <- list(it=dim(swo)[6], ay=2019)
 
-tracking <- FLQuant(dimnames=list(quant="conv", year=2018, iter=seq(args$it)))
-
-# - SWO OM
-
-tes <- dlmsp.sa(swo, swoidx, args, tracking)
+tracking <- FLQuant(dimnames=list(metric="conv.est", year=1951:2020,
+  iter=seq(args$it)))
 
 
+# RUN
 
+system.time(
+tes <- dlmsp.sa(swo, swoidx, args, tracking,
+  prior_dist=list(r=c(0.6, 0.2), MSY=c(log(20000), 0.4)))
+)
+
+# PLOTS
 
 plot(tes$ind) + ylim(c(0, NA))
 
 ggplot(tes$ind, aes(x=year,y=data,group=iter)) + ylim(c(0, NA)) +
   geom_line() + facet_wrap(~qname, scales="free")
 
-ggplot(FLQuants(C=catch(stk), I1=index(idx[[1]]), I2=index(idx[[2]])),
+ggplot(FLQuants(C=catch(swo), I1=index(swoidx[[1]]), I2=index(swoidx[[2]])),
   aes(x=year,y=data, group=iter, colour=qname)) +
   ylim(c(0, NA)) +
-  geom_line() + facet_wrap(~qname, scales="free")
-
-ggplot(indices, aes(x=year,y=data,group=iter)) + ylim(c(0, NA)) +
   geom_line() + facet_wrap(~qname, scales="free")
 
 # TODO: CHECK indices
