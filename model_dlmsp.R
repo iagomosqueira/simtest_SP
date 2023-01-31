@@ -47,26 +47,20 @@ plot(s01$ind$B, vb(window(om, start=1970), sel.pattern(idx)))
 
 # }}}
 
+
 # - SWO IOTC {{{
 
-library(mse)
+load("bootstrap/data/swo.RData")
 
-source("functions.R")
+args <- list(it=dim(swo)[6])
 
-load("ioswo.RData")
-load('~/Active/Old/IOTC/SWO_MSE@iotc/swo/OM/output/om.Rdata')
-
-it <- 500
-stk <- iter(window(observations(oem)$stk, end=2018), seq(it))
-idx <- lapply(iter(window(observations(oem)$idx, end=2018), 1), propagate, 500)
-args <- list(it=dim(stk)[6])
-verbose <- FALSE
 tracking <- FLQuant(dimnames=list(quant="conv", year=2018, iter=seq(args$it)))
-rescale <- 1
 
 # - SWO OM
 
-tes <- dlmsp.sa(stk, idx, args, tracking)
+tes <- dlmsp.sa(swo, swoidx, args, tracking)
+
+
 
 
 plot(tes$ind) + ylim(c(0, NA))
