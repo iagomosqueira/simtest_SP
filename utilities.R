@@ -82,7 +82,7 @@ buildTMBdataDLMSP <- function(catch, indices, rescale=1, fix_sigma=1,
 dlmsp.sa <- function(stk, idx, args, tracking,
   start=list(), state_space=TRUE, early_dev=c("all", "index"),
   prior_dist=list(r=c(NA, NA), MSY=c(NA, NA)),
-  n_seas=4L, rescale=1, random=NULL, verbose=FALSE) {
+  n_seas=1L, rescale=1, random=NULL, verbose=FALSE) {
  
   # EXTRACT inputs
   catch <- catch(stk)
@@ -91,6 +91,7 @@ dlmsp.sa <- function(stk, idx, args, tracking,
   # DIMS
   ny <- dim(catch)[2]
   nsurvey <- length(indices)
+  ay <- args$ay
 
   # TODO: CHECK inputs
 
@@ -105,8 +106,6 @@ dlmsp.sa <- function(stk, idx, args, tracking,
 
   # LOOP over iters
   for (i in seq(args$it)) {
-
-    print(i)
 
     # EXTRACT single iter
     cab <- iter(catch, i)
@@ -138,16 +137,20 @@ dlmsp.sa <- function(stk, idx, args, tracking,
     obj <- MakeADFun(data = data, parameters = params, hessian = TRUE,
       random = random, DLL = "SAMtool", silent = !verbose)
 
-    #
     control <- list(iter.max = 5e3, eval.max = 1e4)
     opt_hess <- FALSE
     n_restart <- ifelse(opt_hess, 0, 1)
     
     # CALL minimizer TODO: CODE own optimize
-    mod <- SAMtool:::optimize_TMB_model(obj, control, opt_hess, n_restart)
+
+    fit <- tryCatch(
+      SAMtool:::optimize_TMB_model(obja, control, opt_hess, n_restart),
+      # error, RETURN 0 output
+      error = function(e) return(list(
+        opt=list(convergence=0))))
 
     # convergence flag
-    conv <- ifelse(is.character(mod[[1]]), 0, 1)
+    conv <- fit$opt$convergence
 
     # EXTRACT outputs
     report <- obj$report(obj$env$last.par.best)
@@ -159,7 +162,7 @@ dlmsp.sa <- function(stk, idx, args, tracking,
 
     out[[i]]$data <- data
     out[[i]]$params <- params
-    out[[i]]$mod <- mod
+    out[[i]]$fit <- fit
   }
 
   # AGGREGATE results
@@ -169,9 +172,9 @@ dlmsp.sa <- function(stk, idx, args, tracking,
   rps <- Reduce(combine, lapply(out, function(x) FLPar(x$rps)))
 
   # WRITE tracking
-  tracking['conv.est', ac(args$ay)] <- unlist(lapply(out, '[[', 'conv'))
+  track(tracking, "conv.est", ac(ay)) <- unlist(lapply(out, '[[', 'conv'))
 
-  return(list(ind=ind, tracking=tracking, refpts=rps))
+  return(list(stk=stk, ind=ind, tracking=tracking, refpts=rps))
 }
 # }}}
 
@@ -210,12 +213,8 @@ buildTMBinputSPICT <- function(catch, indices) {
 spict.sa <- function(stk, idx, args, tracking) {
  
   # EXTRACT inputs
-  catch <- catch(stk)
+  catch <- catch(stk) # + min(c(catch(stk))[c(catch(stk)) > 0]) * 1
   indices <- lapply(idx, index)
-
-  # TODO: DIMS
-  ny <- dim(catch)[2]
-  nsurvey <- length(indices)
 
   # TODO: CHECK inputs
 
@@ -236,7 +235,16 @@ spict.sa <- function(stk, idx, args, tracking) {
     inp <- spict.simple(inp)
 
     # FIT spict
-    fit <- fit.spict(inp)
+    # BUG: FAILS at nlminb, so cannot catch
+    fit <- tryCatch(fit.spict(inp),
+      # error, RETURN 0 output
+      error = function(e) {
+        return(list(
+        opt=list(convergence=1),
+        report=list(MSY==0, Fmsy=0, Bmsy=0),
+        value=c(K=0)))
+      }
+    )
 
     # convergence flag
     conv <- fit$opt$convergence
@@ -252,6 +260,13 @@ spict.sa <- function(stk, idx, args, tracking) {
     
   }
 
+  # WRITE tracking
+  conv <- unlist(lapply(out, '[[', 'conv'))
+  track(tracking, "conv.est", ac(args$ay)) <- conv
+
+  print(args$ay)
+  print(sum(conv))
+
   # COMBINE results
 
   inds <- lapply(out, "[[", "ind")
@@ -260,10 +275,7 @@ spict.sa <- function(stk, idx, args, tracking) {
 
   rps <- Reduce(combine, lapply(out, function(x) FLPar(x$rps)))
 
-  # WRITE tracking
-  tracking['conv.est', ac(args$ay)] <- unlist(lapply(out, '[[', 'conv'))
-
-  return(list(ind=ind, tracking=tracking, refpts=rps))
+  return(list(stk=stk, ind=ind, tracking=tracking, refpts=rps))
 }
 # }}}
 
@@ -371,10 +383,11 @@ spict2FLQuant <- function(x,
 spict2ind <- function(fit) {
 
   out <- list(
-    B = spict2FLQuant(fit, val="logB"),
     F = spict2FLQuant(fit, val="logFnotS"),
-    Bstatus = spict2FLQuant(fit, val="logBBmsy"),
     Fstatus = spict2FLQuant(fit, val="logFFmsynotS"),
+    B = spict2FLQuant(fit, val="logB"),
+    Bstatus = spict2FLQuant(fit, val="logBBmsy"),
+    Bdepletion = spict2FLQuant(fit, val="logB") / fit$value[['K']],
     C = spict2FLQuant(fit, val="logCpred"))
 
   return(FLQuants(out))
@@ -382,3 +395,89 @@ spict2ind <- function(fit) {
 # }}}
 
 #    stk@refpts["B0"] = res$value["K"]/res$report$Bmsy
+
+# --- jabba
+
+# jabba.sa {{{
+
+#' @examples
+#' data(ple4)
+#' data(ple4.index)
+#' inb <- FLIndices(A=FLIndexBiomass(index=quantSums(index(ple4.index) *
+#'   stock.wt(ple4)[, ac(1996:2017)])))
+#' system.time(run <- jabba.sa(ple4, inb, args=list(it=1, y0=1957, ay=2017),
+#' tracking=FLQuant(dimnames=list(metric='conv.est', year=1950:2020))))
+
+jabba.sa <- function(stk, idx, args, tracking, idx.se=rep(0.2, length(idx)),
+  model.type = c("Fox", "Schaefer", "Pella", "Pella_m"), verbose=FALSE) {
+
+  # EXTRACT args
+  ay <- args$ay
+  it <- args$it
+  y0 <- args$y0
+
+  # PREPARE outputs
+  F <- stock(stk) %=% an(NA)
+  Fstatus <- B <- Bstatus <- Bdepletion <- F
+  
+  refpts <- FLPar(NA,
+    dimnames=list(params=c("FMSY", "BMSY", "MSY", "K", "B0"),
+    iter=dimnames(stk)$iter), units=c("t", "f", "t", "t", "t"))
+
+  conv <- rep(0, it)
+
+  # LOOP
+  for(i in seq(it)) {
+
+    # EXTRACT catch and indices
+    ca <- as.data.frame(iter(catch(stk), i), drop=TRUE)
+    id <- model.frame(window(iter(index(idx), i), start=y0), drop=TRUE)
+    se <- id
+
+    # ASSIGN idx.se
+    se[, -1] <- as.list(idx.se)
+
+    # CONSTRUCT input object
+    inp <- build_jabba(catch=ca, cpue=id, se=se,
+      assessment="STK", scenario="jabba.sa", model.type=match.arg(model.type),
+      sigma.est=FALSE, fixed.obsE=0.05, verbose=verbose)
+
+    # FIT
+    fit <- tryCatch(
+      mp_jabba(inp),
+      # error, RETURN 0 output
+      error = function(e) {
+        return(list(B=as.data.frame(iter(B, i) %=% 9),
+        refpts=data.frame(K=9, Bmsy=1, Fmsy=0.0001, MSY=1)))
+      }
+    )
+
+    # F
+    # Fstatus
+    # B
+    iter(B, i)[] <- as.FLQuant(fit$B)[, - dim(B)[2]]
+    # Bstatus
+    iter(Bstatus, i)[] <- as.FLQuant(fit$B)[, - dim(B)[2]] / fit$refpts["Bmsy"]
+    # Bdepletion
+    iter(Bdepletion, i)[] <- as.FLQuant(fit$B)[, - dim(B)[2]] / fit$refpts["K"]
+
+    # refpts
+    iter(refpts, i) <- fit$refpts[c('Fmsy', 'Bmsy', 'MSY', 'K', 'K')]
+
+    # tracking
+    if(fit$B[1, "data"] != 9) {
+      conv[i] <- 1
+    }
+    cat(".")
+  }
+
+  # STORE ind
+  ind <- FLQuants(F=F, Fstatus=Fstatus, B=B, Bstatus=Bstatus,
+    Bdepletion=Bdepletion)
+
+  # TRACK convergence
+  track(tracking, "conv.est", ac(ay)) <- conv
+  
+  list(stk = stk, ind=ind, tracking = tracking)
+}
+# }}}

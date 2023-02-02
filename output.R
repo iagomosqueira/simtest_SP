@@ -11,4 +11,7 @@
 # }}}
 
 
+# --- COMPARE JABBA, OM and dlmsp
 
+# 
+load("model/dlmsp.RData")

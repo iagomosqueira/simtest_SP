@@ -10,82 +10,123 @@
 
 library(TMB)
 library(SAMtool)
+load_all('~/FLR/pkgs/MSE_PKG@flr/mse')
 library(mse)
 
 source("utilities.R")
-
 
 # - SIM {{{
 
 # LOAD OM
 
-load("data/om.RData")
+load("data/sims.RData")
 
-# SET dlmp.sa inputs
+# SET inputs
 
 args <- list(it=dim(om)[6], ay=2020)
 
 tracking <- FLQuant(dimnames=list(metric="conv.est", year=1951:2020,
   iter=seq(args$it)))
 
-# CALL dlmp.sa w/priors
+# R01: No priors
 
-s01 <- dlmsp.sa(om, idx=FLIndices(A=idx), args, tracking)
+r01 <- dlmsp.sa(om, idx=FLIndices(A=idx), args, tracking)$ind
 
-s01 <- dlmsp.sa(om, idx=FLIndices(A=idx), args, tracking,
-  prior_dist=list(r=c(0.4, 0.2), MSY=c(log(50), 0.4)))
+# R02: r and MSY priors
 
-s01 <- dlmsp.sa(om, idx=FLIndices(A=idx), args, tracking,
-  prior_dist=list(MSY=c(log(50), 0.4)))
+r02 <- dlmsp.sa(om, idx=FLIndices(A=idx), args, tracking,
+  prior_dist=list(r=c(0.4, 0.2), MSY=c(log(50), 0.4)))$ind
 
-s01 <- dlmsp.sa(om, idx=FLIndices(A=idx), args, tracking,
-  prior_dist=list(r=c(0.4, 0.01)))
+# R03: r and MSY priors, 4 seasons
 
-# PLOTS
+r03 <- dlmsp.sa(om, idx=FLIndices(A=idx), args, tracking,
+  prior_dist=list(r=c(0.4, 0.2), MSY=c(log(50), 0.4)), n_seas=4L)$ind
 
-# estimates by iter
-ggplot(s01$ind, aes(x=year,y=data,group=iter)) + ylim(c(0, NA)) +
-  geom_line() + facet_wrap(~qname, scales="free")
+# r04: random "log_B_dev"
 
-# B ~ B(om)
-plot(s01$ind$B, stock(om))
+r04 <- dlmsp.sa(om, idx=FLIndices(A=idx), args, tracking,
+  prior_dist=list(r=c(0.4, 0.2), MSY=c(log(50), 0.4)), n_seas=4L,
+  random="log_B_dev")$ind
 
-# B ~ VB(om)
-plot(s01$ind$B, vb(window(om, start=1970), sel.pattern(idx)))
+# r05: no state_space
+
+r05 <- dlmsp.sa(om, idx=FLIndices(A=idx), args, tracking,
+  prior_dist=list(r=c(0.4, 0.2), MSY=c(log(50), 0.4)), n_seas=4L,
+  random="log_B_dev", state_space=FALSE)$ind
+
+# OM
+
+rom <- FLQuants(F=fbar(om), Fstatus=fbar(om) / refpts(om)$Fmsy, B=tsb(om),
+  Bstatus=tsb(om) / refpts(om)$Btgt, Bdepletion=tsb(om) / refpts(om)$B0)
+
+# - RESULTS
+
+rs <- list(OM=rom, R01=r01, R02=r02, R03=r03, R04=r04, R05=r05)
+
+res <- lapply(setNames(nm=names(r01)), function(x)
+  FLQuants(lapply(rs, "[[", x)))
+
+pls <- Map(function(x,y) plot(x) + ggtitle(y) +ylim(c(0,NA)),
+  x=res, y=names(res))
+
+Reduce('+', pls)
+
+save(res, pls, file="model/dlmsp.RData", compress="xz")
 
 # }}}
 
+# - SWO IOTC MP {{{
 
-# - SWO IOTC {{{
+load('~/Active/Old/IOTC/SWO_MSE@iotc/swo/OM/output/om.Rdata')
 
-load("bootstrap/data/swo.RData")
+library(doParallel)
+registerDoParallel(2)
 
-args <- list(it=dim(swo)[6], ay=2019)
+mseargs <- list(iy=2018, fy=2035, frq=3)
 
-tracking <- FLQuant(dimnames=list(metric="conv.est", year=1951:2020,
-  iter=seq(args$it)))
+om <- iter(om, seq(100))
+oem <- iter(oem, seq(100))
 
+# MP0
 
-# RUN
+control <- mpCtrl(list(
+  est = mseCtrl(method=dlmsp.sa, args=list(n_seas=1L, random="log_B_dev",
+    prior_dist=list(r=c(log(0.3, 0.2)), MSY=c(log(30000), 0.3)))),
+  hcr = mseCtrl(method=hockeystick.hcr,
+    args=list(lim=0.10, trigger=0.40, target=mean(refpts(om)$MSY) * 0.90,
+      metric="Bdepletion", output="catch", dlow=0.85, dupp=1.15))))
 
 system.time(
-tes <- dlmsp.sa(swo, swoidx, args, tracking,
-  prior_dist=list(r=c(0.6, 0.2), MSY=c(log(20000), 0.4)))
+mp0 <- mp(om, oem=oem, control=control, args=mseargs, parallel=TRUE)
 )
+
+# MP1
+args(control$est)$random <- NULL
+
+system.time(
+mp1 <- mp(om, oem=oem, control=control, args=mseargs, parallel=TRUE)
+)
+
+# MP2
+args(control$est)$n_seas <- 4L
+
+system.time(
+mp2 <- mp(om, oem=oem, control=control, args=mseargs, parallel=TRUE)
+)
+
+
+save(mp0, mp1, mp2, file="model/swo_dlsmp.RData", compress="xz")
+
 
 # PLOTS
 
-plot(tes$ind) + ylim(c(0, NA))
+# PLOT OM + MP run
+plot(FLStocks(OM=nounit(window(stock(om), end=2018)),
+  MP=nounit(stock(mp0))))
 
-ggplot(tes$ind, aes(x=year,y=data,group=iter)) + ylim(c(0, NA)) +
-  geom_line() + facet_wrap(~qname, scales="free")
+plot(tracking(mp0)[c("B.om")] / refpts(om)$B0,
+  tracking(mp0)[c("met.hcr")])
 
-ggplot(FLQuants(C=catch(swo), I1=index(swoidx[[1]]), I2=index(swoidx[[2]])),
-  aes(x=year,y=data, group=iter, colour=qname)) +
-  ylim(c(0, NA)) +
-  geom_line() + facet_wrap(~qname, scales="free")
-
-# TODO: CHECK indices
 
 # }}}
 
