@@ -59,7 +59,7 @@ buildTMBdataDLMSP <- function(catch, indices, rescale=1, fix_sigma=1,
   use_prior <- !is.na(prior_dist)
 
   if(any(use_prior)) {
-    prior_dist <- matrix(unlist(prior_dist), ncol=2, nrow=2,
+    prior_dist <- matrix(c(unlist(prior_dist)), ncol=2, nrow=2,
       byrow=TRUE, dimnames=list(c("r", "MSY"), c("par1", "par2")))
   }
 
@@ -106,6 +106,8 @@ dlmsp.sa <- function(stk, idx, args, tracking,
 
   # LOOP over iters
   for (i in seq(args$it)) {
+
+    cat(".")
 
     # EXTRACT single iter
     cab <- iter(catch, i)
@@ -225,10 +227,12 @@ spict.sa <- function(stk, idx, args, tracking) {
   # LOOP over iters
   for (i in seq(args$it)) {
 
+    cat(".")
+
     # EXTRACT single iter
     cab <- iter(catch, i)
     ind <- iter(indices, i)
-
+    
     inp <- buildTMBinputSPICT(cab, ind)
 
     # SET simple options
@@ -237,12 +241,16 @@ spict.sa <- function(stk, idx, args, tracking) {
     # FIT spict
     # BUG: FAILS at nlminb, so cannot catch
     fit <- tryCatch(fit.spict(inp),
-      # error, RETURN 0 output
+      # error, RETURN 1 convergence + 0 output
       error = function(e) {
+        browser()
         return(list(
         opt=list(convergence=1),
         report=list(MSY==0, Fmsy=0, Bmsy=0),
-        value=c(K=0)))
+          value=c(K=0)))
+      },
+      warning = function(w) {
+        browser()
       }
     )
 
@@ -260,18 +268,17 @@ spict.sa <- function(stk, idx, args, tracking) {
     
   }
 
-  # WRITE tracking
-  conv <- unlist(lapply(out, '[[', 'conv'))
-  track(tracking, "conv.est", ac(args$ay)) <- conv
-
-  print(args$ay)
-  print(sum(conv))
+  # TRACK convergence
+  track(tracking, "conv.est", ac(args$ay)) <- unlist(lapply(out, '[[', 'conv'))
 
   # COMBINE results
-
   inds <- lapply(out, "[[", "ind")
-  ind <- FLQuants(lapply(setNames(nm=names(inds[[1]])), function(i)
-    Reduce(combine, lapply(inds, "[[", i))))
+  # BUG: dims(year)
+  ind <- tryCatch(FLQuants(lapply(setNames(nm=names(inds[[1]])), function(i)
+    window(Reduce(combine, lapply(inds, "[[", i)), end=args$ay))),
+    error=function(e) {
+      browser()
+    })
 
   rps <- Reduce(combine, lapply(out, function(x) FLPar(x$rps)))
 

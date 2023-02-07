@@ -55,31 +55,40 @@ save(res, pls, file="model/dlmsp.RData", compress="xz")
 
 load('bootstrap/data/swo.RData')
 
-mseargs <- list(iy=2018, fy=2035, frq=3)
+args(projection(om)) <- list(maxF=1)
 
-om <- iter(om, seq(100))
-oem <- iter(oem, seq(100))
+mseargs <- list(iy=2022, frq=3)
+
+# id 36
+id <- sample(seq(500), 5)
+om <- iter(om, id)
+oem <- iter(oem,  id)
 
 # MP0
-
 control <- mpCtrl(list(
   est = mseCtrl(method=spict.sa),
   hcr = mseCtrl(method=hockeystick.hcr,
     args=list(lim=0.10, trigger=0.40, target=mean(refpts(om)$MSY) * 0.90,
       metric="Bdepletion", output="catch", dlow=0.85, dupp=1.15))))
 
-# BUG: iter 93, lowest biomass
-args(projection(om)) <- list(maxF=0.5)
-
 system.time(
-mp0 <- mp(om, oem=oem, control=control, args=mseargs, parallel=FALSE)
+mp0 <- mp(om, oem=oem, control=control, args=mseargs, parallel=FALSE, 
+  verbose=TRUE)
 )
+
+
+
+tes <- fwd(om, control=fwdControl(year=2023:2046, quant='catch', value=30000))
+
+unitSums(catch(tes)[, ac(2023:2046)])
+
+
 
 # - PLOTS
 
 # PLOT OM + MP run
 
-plot(FLStocks(OM=nounit(window(stock(om), end=2018)),
+plot(FLStocks(OM=nounit(window(stock(om), end=2022)),
   MP=nounit(stock(mp0))))
 
 plot(tracking(mp0)[c("B.om")] / refpts(om)$B0,

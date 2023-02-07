@@ -10,7 +10,6 @@
 
 library(TMB)
 library(SAMtool)
-load_all('~/FLR/pkgs/MSE_PKG@flr/mse')
 library(mse)
 
 source("utilities.R")
@@ -77,15 +76,13 @@ save(res, pls, file="model/dlmsp.RData", compress="xz")
 
 # - SWO IOTC MP {{{
 
-load('~/Active/Old/IOTC/SWO_MSE@iotc/swo/OM/output/om.Rdata')
+load('bootstrap/data/swo.RData')
 
 library(doParallel)
 registerDoParallel(2)
 
-mseargs <- list(iy=2018, fy=2035, frq=3)
+mseargs <- list(iy=2022, frq=3)
 
-om <- iter(om, seq(100))
-oem <- iter(oem, seq(100))
 
 # MP0
 
@@ -97,8 +94,10 @@ control <- mpCtrl(list(
       metric="Bdepletion", output="catch", dlow=0.85, dupp=1.15))))
 
 system.time(
-mp0 <- mp(om, oem=oem, control=control, args=mseargs, parallel=TRUE)
+mp0 <- mp(om, oem=oem, control=control, args=mseargs, parallel=TRUE, 
+  verbose=TRUE)
 )
+
 
 # MP1
 args(control$est)$random <- NULL
@@ -121,7 +120,7 @@ save(mp0, mp1, mp2, file="model/swo_dlsmp.RData", compress="xz")
 # PLOTS
 
 # PLOT OM + MP run
-plot(FLStocks(OM=nounit(window(stock(om), end=2018)),
+plot(FLStocks(OM=nounit(window(stock(om), end=2022)),
   MP=nounit(stock(mp0))))
 
 plot(tracking(mp0)[c("B.om")] / refpts(om)$B0,
@@ -129,6 +128,12 @@ plot(tracking(mp0)[c("B.om")] / refpts(om)$B0,
 
 
 # }}}
+
+# TRACKING
+
+# - Have all runs converged?
+# - Difference estimator vs. OM
+
 
 # QUESTIONS
 
