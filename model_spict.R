@@ -13,24 +13,26 @@ library(mse)
 
 source("utilities.R")
 
-# - SIM {{{
+# --- SIM {{{
 
 # LOAD OM
 
 load("data/sims.RData")
 
+idx <- FLIndices(A=idx)
+
 # SET inputs
 
 args <- list(it=dim(om)[6], ay=2020)
 
-tracking <- FLQuant(dimnames=list(metric="conv.est", year=1951:2020,
+tracking <- FLQuant(dimnames=list(metric="met", year=1951:2020,
   iter=seq(args$it)))
 
 # R01: No priors
 
-r01 <- spict.sa(om, idx=FLIndices(A=idx), args, tracking)
+r01 <- spict.sa(om, idx=idx, args, tracking)
 
-# OM
+# OM metrics
 
 rom <- FLQuants(F=fbar(om), Fstatus=fbar(om) / refpts(om)$Fmsy, B=tsb(om),
   Bstatus=tsb(om) / refpts(om)$Btgt, Bdepletion=tsb(om) / refpts(om)$B0)
@@ -47,22 +49,38 @@ pls <- Map(function(x,y) plot(x) + ggtitle(y) +ylim(c(0,NA)),
 
 Reduce('+', pls)
 
-save(res, pls, file="model/dlmsp.RData", compress="xz")
+sum(r01$tracking['conv.est', '2020'])
+
+save(res, pls, file="model/spict_sim.RData", compress="xz")
 
 # }}}
 
-# - SWO IOTC MP {{{
+# --- SWO IOTC MP {{{
+
+library(doParallel)
+registerDoParallel(6)
 
 load('bootstrap/data/swo.RData')
 
+# - SA run
+
+args <- list(it=dim(om)[6], ay=2020)
+
+tracking <- FLQuant(dimnames=list(metric="met", year=1951:2020,
+  iter=seq(args$it)))
+
+stk <- window(nounit(stock(om)), end=2018)
+
+run <- spict.sa(stk, idx=window(observations(oem)$idx, end=2018),
+  args, tracking)
+
+plot(stock(stk) / refpts(om)$B0, run$ind$Bdepletion)
+
+# - RUN MP on OM 2022
+
 args(projection(om)) <- list(maxF=1)
 
-mseargs <- list(iy=2022, frq=3)
-
-# id 36
-id <- sample(seq(500), 5)
-om <- iter(om, id)
-oem <- iter(oem,  id)
+mseargs <- list(iy=2022, fy=2033, frq=3)
 
 # MP0
 control <- mpCtrl(list(
@@ -76,13 +94,11 @@ mp0 <- mp(om, oem=oem, control=control, args=mseargs, parallel=FALSE,
   verbose=TRUE)
 )
 
-
+plot(om,mp0)
 
 tes <- fwd(om, control=fwdControl(year=2023:2046, quant='catch', value=30000))
 
 unitSums(catch(tes)[, ac(2023:2046)])
-
-
 
 # - PLOTS
 

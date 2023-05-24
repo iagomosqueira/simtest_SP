@@ -1,0 +1,50 @@
+---
+title: 
+author: Iago MOSQUEIRA (WMR) <iago.mosqueira@wur.nl
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  bookdown::word_document2:
+tags:
+abstract:
+license: Creative Commons Attribution-ShareAlike 4.0 International Public License
+---
+
+```{r knitr}
+library(knitr)
+opts_chunk$set(echo=FALSE, message=FALSE, warning=FALSE,
+  fig.width=5, fig.height=3, fig.pos='H')
+```
+
+
+The Bayesian surplus production model JABBA (Winker, 2018) has been applied in the model-based MP for swordfish. A formulation of JABBA has been adopted that attempts to speed up the model runs without a measurable degradation in fit and robustness. The production function shape is set to Schaefer, regardless of any possible assumption about the actual shape for this stock. Model estimates of depletion, which form the input to the HCR, should be less sensitive to the choice of curve than MSY-based quantities, and this choice introduces a level of safety in the estimation of productivity.
+
+Both process and observation error are kept at minimum levels, with the process error standard deviation limited to 0.2 in the log scale, to 0.1 for the index  observation error, and a 10% CV in the error on the catch observations. An alternative setup could be attempted that concentrates on process error. Assuming that observation error is likely to lead to biases that can be corrected by the MP tuning process, a good estimate of process error could increase model robustness under certain circumstances.
+
+Data
+
+Total annual catch and relative abundance data for the years 1951 to 2018, were obtained from the 2019 swordfish stock assessment inputs. Two indices of abundance have been chosen as input to the model, based on their predicition skill on the base case stock assessment, as measured by their MASE value: JAP LL NW and TWN LL NW.
+
+Priors
+
+Loosely informative priors were defined, without any stock or species-specific information: r=LN(0.2, 0.5), dep=LN(0.9, 0.25), K=LN(log(2.5e6), 0.85).
+
+- Model exploration
+
+- Results
+
+- Code
+
+
+
+ Observation error was set to a minimum of 0.05 and no additional observation variance was
+
+
+basically if the objective is to keep the stock above BMSY, why care about the left-hand side. since when you are there the plan is to reducing fishing and get out of there as fast as possible
+
+JABBA was run with a set of options designed to make the model fit faster, while still ensuring propr convergence:
+
+    • 
+
+
+# References
+

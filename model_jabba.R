@@ -28,28 +28,30 @@ tracking <- FLQuant(dimnames=list(metric="conv.est", year=1951:2020,
   iter=seq(args$it)))
 
 system.time(
-r01 <- jabba.sa(om, idx=FLIndices(A=idx), args, tracking)$ind
+r01 <- jabba.sa(om, idx=FLIndices(A=idx), args, tracking)[["ind"]]
 )
 
 # 100 iters, min
 
 # OM
 
-rom <- FLQuants(F=fbar(om), Fstatus=fbar(om) / refpts(om)$Fmsy, B=tsb(om),
-  Bstatus=tsb(om) / refpts(om)$Btgt, Bdepletion=tsb(om) / refpts(om)$B0)
+rom <- FLQuants(B=tsb(om), Bstatus=tsb(om) / refpts(om)$Btgt,
+  Bdepletion=tsb(om) / refpts(om)$B0)
 
 # - RESULTS
 
-rs <- list(OM=rom, R01=r01)
-rs <- list(OM=rom, R01=r01, R02=r02, R03=r03, R04=r04, R05=r05)
+rs <- list(OM=rom, JABBA=r01)
 
-res <- lapply(setNames(nm=names(r01)), function(x)
-  FLQuants(lapply(rs, "[[", x)))
+res <- lapply(setNames(names(rom), nm=c("B", "B/B[MSY]", "B/B[0]")),
+  function(x) FLQuants(lapply(rs, "[[", x)))
 
-pls <- Map(function(x,y) plot(x) + ggtitle(y) + ylim(c(0,NA)),
+pls <- Map(function(x,y) plot(x) + ggtitle(parse(text=y)) + ylim(c(0,NA)),
   x=res, y=names(res))
 
 Reduce('+', pls)
+
+pubpng("report/sim_b.png", width=2200,
+  Reduce('+', pls))
 
 save(res, pls, file="model/jabba.RData", compress="xz")
 
@@ -57,17 +59,31 @@ save(res, pls, file="model/jabba.RData", compress="xz")
 
 # - SWO IOTC MP {{{
 
-load('~/Active/Old/IOTC/SWO_MSE@iotc/swo/OM/output/om.Rdata')
+load('~/Active/SWO_MSE@iotc/swo/OM/output/om.Rdata')
 
 library(doParallel)
 registerDoParallel(2)
+
+args <- list(it=1, ay=2020, y0=1950)
+
+tracking <- FLQuant(dimnames=list(metric="met", year=1951:2020,
+  iter=seq(args$it)))
+
+stk <- iter(window(nounit(stock(om)), end=2018), 1)
+
+run <- jabba.sa(stk,
+  idx=iter(window(observations(oem)$idx, end=2018), 1), args, tracking)
+
+plot(stock(stk) / iter(refpts(om)$B0, 1))
+plot(stock(stk) / iter(refpts(om)$B0, 1), run$ind$Bdepletion)
+
+# MP0
 
 mseargs <- list(iy=2018, fy=2035, frq=3)
 
 om <- iter(om, seq(2))
 oem <- iter(oem, seq(2))
 
-# MP0
 
 control <- mpCtrl(list(
   est = mseCtrl(method=jabba.sa),

@@ -81,10 +81,29 @@ load('bootstrap/data/swo.RData')
 library(doParallel)
 registerDoParallel(2)
 
+# - SA run
+
+# runModule(), defaultArgs(), defaultTracking()
+
+args <- list(it=dim(om)[6], ay=2020)
+
+tracking <- FLQuant(dimnames=list(metric="met", year=1951:2020,
+  iter=seq(args$it)))
+
+stk <- window(nounit(stock(om)), end=2018)
+
+run <- dlmsp.sa(stk, idx=window(observations(oem)$idx, end=2018),
+  n_seas=1L, random="log_B_dev",
+  prior_dist=list(r=c(log(0.3, 0.2)), MSY=c(log(30000), 0.3)),
+  args, tracking)
+
+plot(stock(stk) / refpts(om)$B0, run$ind$Bdepletion)
+
+# - MP0
+
 mseargs <- list(iy=2022, frq=3)
 
 
-# MP0
 
 control <- mpCtrl(list(
   est = mseCtrl(method=dlmsp.sa, args=list(n_seas=1L, random="log_B_dev",
@@ -98,6 +117,8 @@ mp0 <- mp(om, oem=oem, control=control, args=mseargs, parallel=TRUE,
   verbose=TRUE)
 )
 
+
+plot(om, mp0)
 
 # MP1
 args(control$est)$random <- NULL
@@ -114,7 +135,7 @@ mp2 <- mp(om, oem=oem, control=control, args=mseargs, parallel=TRUE)
 )
 
 
-save(mp0, mp1, mp2, file="model/swo_dlsmp.RData", compress="xz")
+save(mp0, mp1, mp2, file="model/swo_dlmsp.RData", compress="xz")
 
 
 # PLOTS
@@ -123,7 +144,7 @@ save(mp0, mp1, mp2, file="model/swo_dlsmp.RData", compress="xz")
 plot(FLStocks(OM=nounit(window(stock(om), end=2022)),
   MP=nounit(stock(mp0))))
 
-plot(tracking(mp0)[c("B.om")] / refpts(om)$B0,
+t(tracking(mp0)[c("B.om")] / refpts(om)$B0,
   tracking(mp0)[c("met.hcr")])
 
 

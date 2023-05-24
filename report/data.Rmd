@@ -147,7 +147,7 @@ params(eql)
 
 ```
 
-After making all the desired modifications the time horizon can be adjusted with `fbar` range. Here a time horizon from 1981-2020 is chosen.
+After making all the desired modifications the time horizon can be adjusted with `fbar` range. Here a time horizon from 195ww1-2020 is chosen.
 
 ```{r}
 # change time horizon with a fixed intial f0

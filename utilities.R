@@ -1,11 +1,116 @@
 # utilities.R - DESC
-# /home/mosquia/Active/Doing/SP_IOTC/test_SP/utilities.R
+# SP_IOTC/test_SP/utilities.R
 
 # Copyright (c) WUR, FAO 2023.
 # Author: Henning WINKER (FAO) <iago.mosqueira@wur.nl>
 #         Iago MOSQUEIRA (WMR) <iago.mosqueira@wur.nl>
 #
 # Distributed under the terms of the EUPL-1.2
+
+
+# --- jabba
+
+# jabba.sa {{{
+
+#' @examples
+#' data(ple4)
+#' data(ple4.index)
+#' inb <- FLIndices(A=FLIndexBiomass(index=quantSums(index(ple4.index) *
+#'   stock.wt(ple4)[, ac(1996:2017)])))
+#' system.time(run <- jabba.sa(ple4, inb, args=list(it=1, y0=1957, ay=2017),
+#'   tracking=FLQuant(dimnames=list(metric='conv.est', year=1950:2020))))
+
+jabba.sa <- function(stk, idx, args, tracking, idx.se=rep(0.2, length(idx)),
+  model.type = c("Schaefer", "Fox", "Pella", "Pella_m"),
+  inits = NULL, verbose=FALSE) {
+
+  # EXTRACT inputs
+  catch <- catch(stk)
+  indices <- lapply(idx, index)
+
+  # HANDLE NAs in catch
+  catch[is.na(catch)] <- 0
+
+  # EXTRACT args and SET dims
+  ay <- args$ay
+  it <- args$it
+  y0 <- args$y0
+  ny <- dim(catch)[2]
+
+  # CREATE output
+  empty <- catch %=% 0
+
+  out <- list(
+    ind = FLQuants(lapply(
+      setNames(nm=c("F", "Fstatus", "B", "Bstatus", "Bdepletion")),
+      function(x) propagate(empty, it))),
+    rps = FLPar(NA, dimnames=list(
+      params=c("FMSY", "BMSY", "MSY", "K", "B0"),
+      iter=seq(it)), units=c("f", "t", "t", "t", "t")),
+    conv = rep(NA, it)
+  )
+
+  # LOOP
+  for(i in seq(it)) {
+
+    cat(".")
+
+    # EXTRACT catch and indices
+    cab <- as.data.frame(iter(catch, i), drop=TRUE)
+    ind <- model.frame(window(iter(indices, i), start=y0), drop=TRUE)
+    se <- ind
+
+    # ASSIGN idx.se
+    se[, -1] <- as.list(idx.se)
+
+    # CONSTRUCT input object
+    inp <- build_jabba(catch=cab, cpue=ind, se=se,
+      assessment="STK", scenario="jabba.sa", model.type=match.arg(model.type),
+      sigma.est=TRUE, fixed.obsE=0.05, verbose=verbose)
+
+    # FIT
+    fit <- tryCatch(
+      if(is.null(inits)) {
+        mp_jabba(inp)
+      } else {
+        mp_jabba(inp, init.values=TRUE, init.K=inits[1], init.r=inits[2],
+        init.q=inits[seq(3, length=length(indices))])
+      }, 
+      # error, RETUR NULL
+      error = function(e) {
+        NULL
+      }
+    )
+
+    # STORE outputs
+    if(is.null(fit)) {
+
+      out$conv[i] <- -1
+
+    } else {
+      
+      out$conv[i] <- 0
+
+      # F
+      # Fstatus
+      # B
+      out$ind$B[,,,,,i] <- fit$B$data[-ny]
+      # Bstatus
+      out$ind$Bstatus[,,,,,i] <- fit$B$data[-ny] / fit$refpts["Bmsy"]
+      # Bdepletion
+      out$ind$Bdepletion[,,,,,i] <- fit$B$data[-ny] / fit$refpts["K"]
+
+      # refpts
+      out$rps[, i] <- fit$refpts[c('Fmsy', 'Bmsy', 'MSY', 'K', 'K')]
+    }
+  }
+
+  # TRACK convergence
+  track(tracking, "conv.est", ac(ay)) <- out$conv
+  
+  list(stk = stk, ind=out$ind, tracking = tracking, refpts=out$rps)
+}
+# }}}
 
 # ---- dlmsp
 
@@ -88,16 +193,21 @@ dlmsp.sa <- function(stk, idx, args, tracking,
   catch <- catch(stk)
   indices <- lapply(idx, index)
 
-  # DIMS
+  # EXTRACT args and SET dims
   ny <- dim(catch)[2]
   nsurvey <- length(indices)
   ay <- args$ay
 
-  # TODO: CHECK inputs
+  # CREATE output
+  empty <- catch %=% 0.001
 
-  # OUTPUT
-  empty <- catch %=% 0
-  out <- vector(mode="list", length=args$it)
+  out <- list(
+    ind = lapply(setNames(nm=c("F", "Fstatus", "B", "Bstatus", "Bdepletion")),
+      function(x) propagate(empty, args$it)),
+    rps = FLPar(NA, dimnames=list(params=c("FMSY", "BMSY", "K", "MSY"),
+      iter=seq(args$it))),
+    conv = rep(NA, args$it)
+  )
 
   # SETUP map
   map <- list(log_dep = factor(NA), log_n = factor(NA),
@@ -106,8 +216,6 @@ dlmsp.sa <- function(stk, idx, args, tracking,
 
   # LOOP over iters
   for (i in seq(args$it)) {
-
-    cat(".")
 
     # EXTRACT single iter
     cab <- iter(catch, i)
@@ -139,44 +247,93 @@ dlmsp.sa <- function(stk, idx, args, tracking,
     obj <- MakeADFun(data = data, parameters = params, hessian = TRUE,
       random = random, DLL = "SAMtool", silent = !verbose)
 
+    # OPTIONS
     control <- list(iter.max = 5e3, eval.max = 1e4)
     opt_hess <- FALSE
-    n_restart <- ifelse(opt_hess, 0, 1)
+    n_restart <- ifelse(opt_hess, 0, 2)
     
-    # CALL minimizer TODO: CODE own optimize
-
+    # CALL minimizer
     fit <- tryCatch(
-      SAMtool:::optimize_TMB_model(obja, control, opt_hess, n_restart),
+      optimize_TMB_model(obj, control, opt_hess, n_restart),
       # error, RETURN 0 output
-      error = function(e) return(list(
-        opt=list(convergence=0))))
+      error = function(e) {
+        # opt$convergence as -1
+        return(list(opt=list(convergence=-1)))
+      }
+    )
 
     # convergence flag
-    conv <- fit$opt$convergence
+    out$conv[i] <- fit$opt$convergence
 
-    # EXTRACT outputs
-    report <- obj$report(obj$env$last.par.best)
+    if(out$conv[i] == -1) {
+
+      cat("*")
+
+    } else {
     
-    out[[i]] <- list(F = report$F, Fstatus = report$F / report$FMSY,
-      B = report$B[-ny], Bstatus = (report$B / report$BMSY)[-ny],
-      Bdepletion = (report$B/report$K)[-ny],
-      conv=conv, rps= unlist(report[c("FMSY", "BMSY", "K", "MSY")]))
+      cat(".")
 
-    out[[i]]$data <- data
-    out[[i]]$params <- params
-    out[[i]]$fit <- fit
+      # EXTRACT outputs
+      report <- obj$report(obj$env$last.par.best)
+
+      out$ind$F[,,,,,i] <- report$F
+      out$ind$Fstatus[,,,,,i] <- report$F / report$FMSY
+      out$ind$B[,,,,,i] <- report$B[-ny]
+      out$ind$Bstatus[,,,,,i] <- (report$B / report$BMSY)[-ny]
+      out$ind$Bdepletion[,,,,,i] <- (report$B / report$K)[-ny]
+
+      out$rps[,i] <- unlist(report[c("FMSY", "BMSY", "K", "MSY")])
+    }
   }
 
-  # AGGREGATE results
-  ind <- FLQuants(lapply(setNames(nm=names(out[[1]][1:5])), function(x)
-    empty %=% unlist(lapply(out, '[[', x))))
-
-  rps <- Reduce(combine, lapply(out, function(x) FLPar(x$rps)))
-
   # WRITE tracking
-  track(tracking, "conv.est", ac(ay)) <- unlist(lapply(out, '[[', 'conv'))
+  track(tracking, "conv.est", ac(ay)) <- out$conv
 
-  return(list(stk=stk, ind=ind, tracking=tracking, refpts=rps))
+  out$ind <- FLQuants(out$ind)
+
+  return(list(stk=stk, ind=out$ind, tracking=tracking,
+    refpts=out$rps))
+}
+# }}}
+
+# --- optimize_TMB_model {{{
+
+optimize_TMB_model <- function(obj, control = list(), use_hessian = FALSE, restart = 0, do_sd = TRUE) {
+  restart <- as.integer(restart)
+
+  if (is.null(obj$env$random) && use_hessian) h <- obj$he else h <- NULL
+  low <- rep(-Inf, length(obj$par))
+  upr <- rep(Inf, length(obj$par))
+  
+  if (any(c("U_equilibrium", "F_equilibrium") %in% names(obj$par))) {
+    low[match(c("U_equilibrium", "F_equilibrium"), names(obj$par))] <- 0
+  }
+  if (any(names(obj$par) == "R0x") && obj$env$data$use_prior["R0"] > 1) { # R0 uniform priors need bounds
+    R0x_ind <- names(obj$par) == "R0x"
+    low[R0x_ind] <- log(obj$env$data$prior_dist[1, 1]) + log(obj$env$data$rescale)
+    upr[R0x_ind] <- log(obj$env$data$prior_dist[1, 2]) + log(obj$env$data$rescale)
+    
+    # R0x start value must be in between bounds
+    if (any(obj$par[R0x_ind] <= low[R0x_ind] | obj$par[R0x_ind] >= upr[R0x_ind])) {
+      obj$par[R0x_ind] <- 0.95 * upr[R0x_ind]
+    }
+  }
+  
+  opt <- tryCatch(suppressWarnings(nlminb(obj$par, obj$fn, obj$gr, h, control = control, lower = low, upper = upr)),
+                  error = function(e) as.character(e))
+  
+  if (do_sd) {
+    SD <- SAMtool:::get_sdreport(obj)
+    
+    if (!SD$pdHess && restart > 0) {
+      if (!is.character(opt)) obj$par <- opt$par * exp(rnorm(length(opt$par), 0, 1e-3))
+      Recall(obj, control, use_hessian, restart - 1, do_sd)
+    } else {
+    return(list(opt = list(convergence=2, error=opt), SD = SD))
+    }
+  } else {
+    return(list(opt = list(convergence=2, error=opt), SD = NULL))
+  }
 }
 # }}}
 
@@ -218,8 +375,6 @@ spict.sa <- function(stk, idx, args, tracking) {
   catch <- catch(stk) # + min(c(catch(stk))[c(catch(stk)) > 0]) * 1
   indices <- lapply(idx, index)
 
-  # TODO: CHECK inputs
-
   # OUTPUT
   empty <- catch %=% 0
   out <- vector(mode="list", length=args$it)
@@ -243,14 +398,14 @@ spict.sa <- function(stk, idx, args, tracking) {
     fit <- tryCatch(fit.spict(inp),
       # error, RETURN 1 convergence + 0 output
       error = function(e) {
-        browser()
+        print(i)
         return(list(
-        opt=list(convergence=1),
+        opt=list(convergence=3),
         report=list(MSY==0, Fmsy=0, Bmsy=0),
           value=c(K=0)))
       },
       warning = function(w) {
-        browser()
+        print(i)
       }
     )
 
@@ -271,13 +426,12 @@ spict.sa <- function(stk, idx, args, tracking) {
   # TRACK convergence
   track(tracking, "conv.est", ac(args$ay)) <- unlist(lapply(out, '[[', 'conv'))
 
-  # COMBINE results
+  # COMBINE results TODO: SPEED UP using c()
   inds <- lapply(out, "[[", "ind")
   # BUG: dims(year)
   ind <- tryCatch(FLQuants(lapply(setNames(nm=names(inds[[1]])), function(i)
     window(Reduce(combine, lapply(inds, "[[", i)), end=args$ay))),
     error=function(e) {
-      browser()
     })
 
   rps <- Reduce(combine, lapply(out, function(x) FLPar(x$rps)))
@@ -402,89 +556,3 @@ spict2ind <- function(fit) {
 # }}}
 
 #    stk@refpts["B0"] = res$value["K"]/res$report$Bmsy
-
-# --- jabba
-
-# jabba.sa {{{
-
-#' @examples
-#' data(ple4)
-#' data(ple4.index)
-#' inb <- FLIndices(A=FLIndexBiomass(index=quantSums(index(ple4.index) *
-#'   stock.wt(ple4)[, ac(1996:2017)])))
-#' system.time(run <- jabba.sa(ple4, inb, args=list(it=1, y0=1957, ay=2017),
-#' tracking=FLQuant(dimnames=list(metric='conv.est', year=1950:2020))))
-
-jabba.sa <- function(stk, idx, args, tracking, idx.se=rep(0.2, length(idx)),
-  model.type = c("Fox", "Schaefer", "Pella", "Pella_m"), verbose=FALSE) {
-
-  # EXTRACT args
-  ay <- args$ay
-  it <- args$it
-  y0 <- args$y0
-
-  # PREPARE outputs
-  F <- stock(stk) %=% an(NA)
-  Fstatus <- B <- Bstatus <- Bdepletion <- F
-  
-  refpts <- FLPar(NA,
-    dimnames=list(params=c("FMSY", "BMSY", "MSY", "K", "B0"),
-    iter=dimnames(stk)$iter), units=c("t", "f", "t", "t", "t"))
-
-  conv <- rep(0, it)
-
-  # LOOP
-  for(i in seq(it)) {
-
-    # EXTRACT catch and indices
-    ca <- as.data.frame(iter(catch(stk), i), drop=TRUE)
-    id <- model.frame(window(iter(index(idx), i), start=y0), drop=TRUE)
-    se <- id
-
-    # ASSIGN idx.se
-    se[, -1] <- as.list(idx.se)
-
-    # CONSTRUCT input object
-    inp <- build_jabba(catch=ca, cpue=id, se=se,
-      assessment="STK", scenario="jabba.sa", model.type=match.arg(model.type),
-      sigma.est=FALSE, fixed.obsE=0.05, verbose=verbose)
-
-    # FIT
-    fit <- tryCatch(
-      mp_jabba(inp),
-      # error, RETURN 0 output
-      error = function(e) {
-        return(list(B=as.data.frame(iter(B, i) %=% 9),
-        refpts=data.frame(K=9, Bmsy=1, Fmsy=0.0001, MSY=1)))
-      }
-    )
-
-    # F
-    # Fstatus
-    # B
-    iter(B, i)[] <- as.FLQuant(fit$B)[, - dim(B)[2]]
-    # Bstatus
-    iter(Bstatus, i)[] <- as.FLQuant(fit$B)[, - dim(B)[2]] / fit$refpts["Bmsy"]
-    # Bdepletion
-    iter(Bdepletion, i)[] <- as.FLQuant(fit$B)[, - dim(B)[2]] / fit$refpts["K"]
-
-    # refpts
-    iter(refpts, i) <- fit$refpts[c('Fmsy', 'Bmsy', 'MSY', 'K', 'K')]
-
-    # tracking
-    if(fit$B[1, "data"] != 9) {
-      conv[i] <- 1
-    }
-    cat(".")
-  }
-
-  # STORE ind
-  ind <- FLQuants(F=F, Fstatus=Fstatus, B=B, Bstatus=Bstatus,
-    Bdepletion=Bdepletion)
-
-  # TRACK convergence
-  track(tracking, "conv.est", ac(ay)) <- conv
-  
-  list(stk = stk, ind=ind, tracking = tracking)
-}
-# }}}
